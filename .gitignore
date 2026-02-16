@@ -1,0 +1,16 @@
+# Python bytecode (prevents junk files)
+__pycache__/
+*.py[cod]
+
+# Model Checkpoints (Heavy files)
+*.pt
+*.pth
+*.bin
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# If you ever decide to create a local venv here later
+venv/
+env/
