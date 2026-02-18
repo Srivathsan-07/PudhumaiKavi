@@ -1,11 +1,14 @@
 # Python bytecode (prevents junk files)
 __pycache__/
 *.py[cod]
+*.csv
+*.txt
 
 # Model Checkpoints (Heavy files)
 *.pt
 *.pth
 *.bin
+
 
 # OS specific files
 .DS_Store
