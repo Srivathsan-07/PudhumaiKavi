@@ -49,4 +49,83 @@ def get_batch(split):
     return x, y
 
 @torch.no_grad()
+def estimate_loss():
+    out = {}
+    model.eval() # chaning model to evaluation mode
+    for split in ['train', 'test']:
+        losses = torch.zeros(eval_iters)
+        for k in range(eval_iters):
+            X, Y = get_batch(split)
+            logits, loss = model(X,Y)
+            losses[k] = loss.item()
+        out[split] = losses.mean() # averaging the losses across all the eval iterations
+    model.train() # reverting model to training mode
+    return out
 
+class Head(nn.Module):
+    """Single Head of self-attention"""
+
+    def __init__(self, head_size):
+        super().__init__() # initializing the super(parent) class
+        self.key = nn.Linear(n_embd, head_size, bias=False) 
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        self.dropout =  nn.Dropout(dropout)
+
+    def forward(self, x):
+        B, T, C = x.shape
+        k = self.key(x) # key layer is being applied to the input x
+        q = self.query(x) # query layer is being applied to the input x
+        # compute attention scores
+        wei = q @ k.transpose(-2,-1) * C**-0.5 # dividing by the C to scale the dotproduct
+        wei = wei.masked_fill(self.tril[:T,:T] == 0, float('-inf'))
+        wei.softmax(wei, dim=-1)
+        v = self.value(x)
+        out = wei @ v
+        return out
+    
+class MultiHeadAttention(nn.Module):
+    """Multiple heads of self-attention in parallel"""
+
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(n_embd, n_embd)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        out = torch.cat([h[x] for h in self.heads], dim=-1)
+        out = self.proj(out)
+        return out
+
+class FeedForward(nn.Module):
+    """A simple linear layer followed by non-linearity"""
+
+    def __init__(self, n_embd):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, n_embd * 4),
+            nn.ReLU(),
+            nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(dropout)
+        )
+    
+    def forward(self, x):
+        return self.net(x)
+    
+class Block(nn.Module):
+    """Transformer block: communication followed by computation"""
+
+    def __init__(self, n_embd, n_head):
+        super().__init__()
+        head_size = n_embd // n_head
+        self.sa = MultiHeadAttention(n_head, head_size)
+        self.ffwd = FeedForward(n_embd)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
+
+    def forward(self, x):
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
+        return x
