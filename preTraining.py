@@ -6,7 +6,7 @@ from torch.nn import functional as F
 batch_size = 64 # no. of independent examples to train on in one run parallely
 block_size = 256 # size of context window
 max_iters = 5000 # no of training iterations
-eval_interval = 500 # no of iteration after which to evaluate the model
+eval_interval = 250 # no of iteration after which to evaluate the model
 learning_rate = 3e-3 # gradient descent learing rate
 device = 'cuda' if torch.cuda.is_available() else 'cpu' # using cuda if available
 eval_iters = 200 # no of iterations of evaluation to be averaged out after
@@ -52,7 +52,7 @@ def get_batch(split):
 def estimate_loss():
     out = {}
     model.eval() # chaning model to evaluation mode
-    for split in ['train', 'test']:
+    for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
             X, Y = get_batch(split)
@@ -80,7 +80,7 @@ class Head(nn.Module):
         # compute attention scores
         wei = q @ k.transpose(-2,-1) * C**-0.5 # dividing by the C to scale the dotproduct
         wei = wei.masked_fill(self.tril[:T,:T] == 0, float('-inf'))
-        wei.softmax(wei, dim=-1)
+        wei = F.softmax(wei, dim=-1)
         v = self.value(x)
         out = wei @ v
         return out
@@ -95,7 +95,7 @@ class MultiHeadAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        out = torch.cat([h[x] for h in self.heads], dim=-1)
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
         out = self.proj(out)
         return out
 
@@ -129,3 +129,76 @@ class Block(nn.Module):
         x = x + self.sa(self.ln1(x))
         x = x + self.ffwd(self.ln2(x))
         return x
+
+class BigramLanguageModel(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+        # each token directly reads of logits for the next token from a look-up table
+        self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
+        self.positional_embedding_table = nn.Embedding(block_size, n_embd)
+        self.blocks = nn.Sequential(*[Block(n_embd, n_head) for _ in range(n_layer)])
+        self.ln_f = nn.LayerNorm(n_embd)
+        self.lm_head = nn.Linear(n_embd, vocab_size)
+    
+    def forward(self, idx, targets=None):
+        B, T = idx.shape
+        # idx and targets are both B, T tensors of integers
+        tok_emb = self.token_embedding_table(idx)
+        pos_emb = self.positional_embedding_table(torch.arange(T, device=device))
+        x = tok_emb + pos_emb
+        x = self.blocks(x)
+        logits = self.lm_head(x)
+
+        if targets is None:
+            loss = None
+        else:
+            B, T, C = logits.shape
+            logits = logits.view(B*T, C)
+            targets = targets.view(B*T)
+            loss = F.cross_entropy(logits, targets)
+        return logits, loss
+    
+    def generate(self, idx, max_new_tokens):
+
+        for _ in range(max_new_tokens):
+            idx_cond = idx[:, -block_size:]
+            logits, loss = self(idx_cond)
+            logits = logits[:,-1,:]
+            probs = F.softmax(logits, dim=-1)
+            idx_next = torch.multinomial(probs, num_samples=1)
+            idx = torch.cat((idx, idx_next), dim=1)
+        return idx
+    
+model = BigramLanguageModel()
+m = model.to(device)
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+
+for iter in range(max_iters):
+
+    # evaluate the loss every once in a while
+    if iter % eval_interval == 0:
+        losses = estimate_loss()
+        print(f"step {iter}: train loss { losses['train']:.4f}, val loss {losses['val']:.4f}")
+
+    xb, yb = get_batch('train')
+
+    logits, loss = model(xb, yb)
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
+
+
+torch.save(m.state_dict(), 'wikiGPT.pt')
+
+context = torch.zeros((1, 1), dtype=torch.long, device=device)
+generated_indices = m.generate(context, max_new_tokens=500)[0].tolist()
+print(f"Generated {len(generated_indices)} tokens.")
+print(decode(generated_indices))
+
+output_text = decode(model.generate(context, max_new_tokens=5000)[0].tolist())
+
+
+with open('generated_output_wiki.txt', 'w', encoding='utf-8') as f:
+    f.write(output_text)
